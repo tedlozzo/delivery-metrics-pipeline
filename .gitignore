@@ -172,3 +172,6 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+github_data.duckdb
+.gitignore
+github_data.duckdb.wal
