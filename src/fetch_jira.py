@@ -2,21 +2,17 @@ import os
 import requests
 import json
 import logging
-import base64
 import duckdb
 import pandas as pd
-from datetime import datetime
 from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
 
-# Set up logging
+from utils.jira_utils import validate_jira_config, setup_jira_auth, format_jira_updated_for_jql
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 load_dotenv()
 
-# Load environment variables
-JIRA_EMAIL = os.getenv('JIRA_EMAIL')
-JIRA_AUTH_TOKEN = os.getenv('JIRA_AUTH_TOKEN')  
 JIRA_BASE_URL = os.getenv('JIRA_BASE_URL')
 JIRA_API_VERSION = os.getenv('JIRA_API_VERSION', '2')
 JIRA_PROJECT_KEY = os.getenv('JIRA_PROJECT_KEY')
@@ -24,55 +20,19 @@ DB_PATH = os.getenv('DUCKDB_PATH', 'jira_data.duckdb')
 
 class JiraFetcher:
     def __init__(self):
-        self.validate_config()
-        self.setup_auth()
-        
-    def validate_config(self):
-        """Validate required configuration."""
-        required_vars = ['JIRA_BASE_URL', 'JIRA_PROJECT_KEY']
-        missing_vars = [var for var in required_vars if not globals()[var]]
-        
-        if missing_vars:
-            logger.error(f"Missing required environment variables: {missing_vars}")
-            raise ValueError(f"Missing required environment variables: {missing_vars}")
-        
-        # Ensure base URL ends with /
-        global JIRA_BASE_URL
-        if not JIRA_BASE_URL.endswith('/'):
-            JIRA_BASE_URL += '/'
-    
-    def setup_auth(self):
-        """Setup authentication headers."""
-        if not JIRA_EMAIL or not JIRA_AUTH_TOKEN:
-            self.auth_headers = {}
-            logger.warning("No authentication credentials provided")
-            return
+        validate_jira_config()
+        self.auth_headers = setup_jira_auth()
 
-        auth_string = f"{JIRA_EMAIL}:{JIRA_AUTH_TOKEN}"
-        auth_bytes = base64.b64encode(auth_string.encode('utf-8'))
-        auth_header = auth_bytes.decode('utf-8')
-        
-        self.auth_headers = {
-            "Authorization": f"Basic {auth_header}",
-            "Content-Type": "application/json",
-            "X-Atlassian-Token": "no-check"
-        }
-    
     def get_last_updated(self, con) -> Optional[str]:
-        """Get the last updated timestamp from the database."""
         try:
             result = con.execute("""
-                SELECT MAX(JSON_EXTRACT(fields, '$.updated')) as max_updated 
+                SELECT MAX(JSON_EXTRACT_STRING(fields, '$.updated')) as max_updated 
                 FROM jira_issues
             """).fetchone()
-            
             if result and result[0]:
-                # Convert to JIRA format (YYYY-MM-DD HH:MM)
-                dt = datetime.fromisoformat(result[0].replace('Z', '+00:00'))
-                return dt.strftime('%Y-%m-%d %H:%M')
+                return format_jira_updated_for_jql(result[0])
         except Exception as e:
             logger.info(f"No existing data found or error querying: {e}")
-        
         return None
     
     def fetch_issues(self, start_at: int = 0, max_results: int = 100, 
