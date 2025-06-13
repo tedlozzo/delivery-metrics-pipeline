@@ -8,8 +8,8 @@ class GitProvider(ABC):
         pass
     
     @abstractmethod
-    def fetch_commits(self, since: str, page: int = 1, per_page: int = 100) -> List[Dict[str, Any]]:
-        """Fetch commits from the provider."""
+    def fetch_commits_for_pull_request(self, pull_number: int, page: int = 1, per_page: int = 100) -> List[Dict[str, Any]]:
+        """Fetch commits for a specific pull request."""
         pass
     
     @abstractmethod

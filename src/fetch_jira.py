@@ -123,16 +123,32 @@ class JiraFetcher:
             )
         """)
         
-        # Changelog table with structured schema
+        # Flat changelog table
         con.execute("""
             CREATE TABLE IF NOT EXISTS jira_changelog (
-                id TEXT PRIMARY KEY,
+                id TEXT,
                 issue_key TEXT,
+                created TIMESTAMP,
                 author_account_id TEXT,
                 author_display_name TEXT,
-                created TIMESTAMP,
-                changelog_items JSON,
-                FOREIGN KEY (issue_key) REFERENCES jira_issues(key)
+                field TEXT,
+                field_type TEXT,
+                from_value TEXT,
+                from_string TEXT,
+                to_value TEXT,
+                to_string TEXT,
+                PRIMARY KEY (id, field)
+            )
+        """)
+        
+        # Links table without strict foreign key constraints
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jira_links (
+                source_issue_key TEXT,
+                target_issue_key TEXT,
+                link_type TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (source_issue_key, target_issue_key, link_type)
             )
         """)
     
@@ -169,32 +185,91 @@ class JiraFetcher:
         if not changelog_entries:
             return
         
-        changelog_data = []
+        flat_changelog_data = []
         for entry in changelog_entries:
-            changelog_data.append({
-                'id': entry['id'],
-                'issue_key': issue_key,
-                'author_account_id': entry.get('author', {}).get('accountId', ''),
-                'author_display_name': entry.get('author', {}).get('displayName', ''),
-                'created': entry['created'],
-                'changelog_items': json.dumps(entry.get('items', []))
-            })
+            changelog_id = entry['id']
+            created = entry['created']
+            author_account_id = entry.get('author', {}).get('accountId', '')
+            author_display_name = entry.get('author', {}).get('displayName', '')
+            
+            # Flatten changelog items
+            for item in entry.get('items', []):
+                flat_changelog_data.append({
+                    'id': changelog_id,
+                    'issue_key': issue_key,
+                    'created': created,
+                    'author_account_id': author_account_id,
+                    'author_display_name': author_display_name,
+                    'field': item.get('field', ''),
+                    'field_type': item.get('fieldtype', ''),
+                    'from_value': item.get('from', ''),
+                    'from_string': item.get('fromString', ''),
+                    'to_value': item.get('to', ''),
+                    'to_string': item.get('toString', '')
+                })
         
-        if changelog_data:
-            df = pd.DataFrame(changelog_data)
-            con.execute("CREATE OR REPLACE TEMP TABLE _new_changelog AS SELECT * FROM df")
+        if flat_changelog_data:
+            df = pd.DataFrame(flat_changelog_data)
+            con.execute("CREATE OR REPLACE TEMP TABLE _new_flat_changelog AS SELECT * FROM df")
             
             con.execute("""
-                INSERT INTO jira_changelog 
-                SELECT id, issue_key, author_account_id, author_display_name, 
-                       created::TIMESTAMP, changelog_items::JSON 
-                FROM _new_changelog
-                ON CONFLICT (id) DO UPDATE SET
+                INSERT INTO jira_changelog (
+                    id, issue_key, created, author_account_id, author_display_name,
+                    field, field_type, from_value, from_string, to_value, to_string
+                )
+                SELECT id, issue_key, created::TIMESTAMP, author_account_id, author_display_name,
+                       field, field_type, from_value, from_string, to_value, to_string
+                FROM _new_flat_changelog
+                ON CONFLICT (id, field) DO UPDATE SET
+                    created = excluded.created,
                     author_account_id = excluded.author_account_id,
                     author_display_name = excluded.author_display_name,
-                    created = excluded.created,
-                    changelog_items = excluded.changelog_items
+                    from_value = excluded.from_value,
+                    from_string = excluded.from_string,
+                    to_value = excluded.to_value,
+                    to_string = excluded.to_string
             """)
+    
+    def upsert_links(self, con, links: List[Dict[str, str]]):
+        """Upsert issue links into the database."""
+        if not links:
+            logger.info("No links to upsert.")
+            return
+        
+        # Prepare data for upsert
+        df = pd.DataFrame(links)
+        con.execute("CREATE OR REPLACE TEMP TABLE _new_links AS SELECT * FROM df")
+        
+        con.execute("""
+            INSERT INTO jira_links (source_issue_key, target_issue_key, link_type, created_at)
+            SELECT source_issue_key, target_issue_key, link_type, now() FROM _new_links
+            ON CONFLICT (source_issue_key, target_issue_key, link_type) DO NOTHING
+        """)
+    
+    def extract_links(self, issue: Dict[str, Any]) -> List[Dict[str, str]]:
+        """Extract issue links from the fields.issuelinks field."""
+        links = []
+        issue_key = issue['key']
+        issue_links = issue.get('fields', {}).get('issuelinks', [])
+        
+        for link in issue_links:
+            link_type = link.get('type', {}).get('name', '')  # e.g., "Blocks", "Relates to"
+            
+            # Check for outward and inward links
+            if 'outwardIssue' in link:
+                links.append({
+                    'source_issue_key': issue_key,
+                    'target_issue_key': link['outwardIssue']['key'],
+                    'link_type': link_type
+                })
+            if 'inwardIssue' in link:
+                links.append({
+                    'source_issue_key': link['inwardIssue']['key'],
+                    'target_issue_key': issue_key,
+                    'link_type': link_type
+                })
+        
+        return links
     
     def run(self):
         """Main execution method."""
@@ -220,14 +295,16 @@ class JiraFetcher:
             
             logger.info(f"Processing {len(issues)} issues from offset {start_at}")
             
-            # Fetch changelog for each issue
+            # Fetch changelog and links for each issue
             for issue in issues:
                 issue_key = issue['key']
                 changelog = self.fetch_issue_changelog(issue_key)
+                # links = self.extract_links(issue)
                 
-                # Upsert issue and changelog separately
+                # Upsert issue, changelog, and links separately
                 self.upsert_issues(con, [issue])
                 self.upsert_changelog(con, issue_key, changelog)
+                # self.upsert_links(con, links)
             
             total_processed += len(issues)
             logger.info(f"Total issues processed: {total_processed}")

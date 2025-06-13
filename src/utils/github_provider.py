@@ -1,5 +1,5 @@
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any
 from utils.git_provider import GitProvider
 
@@ -8,7 +8,8 @@ class GitHubProvider(GitProvider):
         self.repo = repo
         self.headers = {
             "Authorization": f"Bearer {api_key}",
-            "Accept": "application/vnd.github+json"
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
         }
     
     def fetch_pull_requests(self, since: str, page: int = 1, per_page: int = 100) -> List[Dict[str, Any]]:
@@ -25,18 +26,29 @@ class GitHubProvider(GitProvider):
         response.raise_for_status()
         data = response.json()
         
-        # Filter by since date
-        filtered = [
-            pr for pr in data
-            if datetime.strptime(pr['updated_at'], "%Y-%m-%dT%H:%M:%SZ") > since
-        ]
+        # Handle since date comparison - ensure both datetimes are timezone-aware
+        if isinstance(since, str):
+            # Parse the since string and make it timezone-aware if it isn't
+            if since.endswith('Z'):
+                since_dt = datetime.strptime(since, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            else:
+                since_dt = datetime.fromisoformat(since.replace('Z', '+00:00'))
+        else:
+            since_dt = since
+            
+        filtered = []
+        for pr in data:
+            # Parse PR updated_at and make it timezone-aware
+            pr_updated = datetime.strptime(pr['updated_at'], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            if pr_updated > since_dt:
+                filtered.append(pr)
         
         return filtered
-    
-    def fetch_commits(self, since: str, page: int = 1, per_page: int = 100) -> List[Dict[str, Any]]:
-        url = f"https://api.github.com/repos/{self.repo}/commits"
+
+    def fetch_commits_for_pull_request(self, pull_number: int, page: int = 1, per_page: int = 100) -> List[Dict[str, Any]]:
+        """Fetch commits for a specific pull request."""
+        url = f"https://api.github.com/repos/{self.repo}/pulls/{pull_number}/commits"
         params = {
-            "since": since,
             "per_page": per_page,
             "page": page
         }
@@ -58,7 +70,7 @@ class GitHubProvider(GitProvider):
             "merged_at": pr["merged_at"],
             "html_url": pr["html_url"]
         }
-    
+
     def normalize_commit(self, commit: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "sha": commit["sha"],
