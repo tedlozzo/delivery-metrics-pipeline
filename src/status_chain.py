@@ -15,17 +15,16 @@ def extract_status_chains():
 issue_types AS (
     SELECT
         key AS issue_key,
+        json_extract_string(json_extract(fields, 'status'), 'name') AS current_status,
         json_extract_string(json_extract(fields, 'issuetype'), 'name') AS issue_type
     FROM jira_issues
-    WHERE
-    json_extract_string(json_extract(fields, 'status'), 'name') IN ('Closed', 'Done', 'Resolved', 'Patch available', 'Fixed', 'Released')
 ),
 status_transitions AS (
     SELECT
         issue_key,
         created,
-        replace(from_string, 'Resolved', 'Closed') AS from_string,
-        replace(to_string, 'Resolved', 'Closed') AS to_string,
+        from_string,
+        to_string,
         ROW_NUMBER() OVER (
             PARTITION BY issue_key
             ORDER BY created
@@ -94,10 +93,15 @@ SELECT
     t.transition_timestamp,
     EXTRACT(EPOCH FROM (t.transition_timestamp - t.previous_timestamp)) AS duration_seconds,
     cl.chain_length,
-    it.issue_type
+    it.issue_type,
+    it.current_status,
+    st.classification,
+    st.type
 FROM transitions_with_durations t
 JOIN chain_lengths cl ON t.issue_key = cl.issue_key
 JOIN issue_types it ON t.issue_key = it.issue_key
+JOIN read_csv('output/status_transitions.csv') st ON t.source = st.source AND t.target = st.target
+WHERE t.step > 0
 ORDER BY t.issue_key, t.step;
 
 

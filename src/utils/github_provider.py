@@ -12,38 +12,32 @@ class GitHubProvider(GitProvider):
             "X-GitHub-Api-Version": "2022-11-28"
         }
     
-    def fetch_pull_requests(self, since: str, page: int = 1, per_page: int = 100) -> List[Dict[str, Any]]:
+    def fetch_pull_requests(self, last_updated: str, page: int = 1, per_page: int = 100) -> List[Dict[str, Any]]:
         url = f"https://api.github.com/repos/{self.repo}/pulls"
         params = {
-            "state": "all",
-            "sort": "updated", 
-            "direction": "asc",
+            "state": "all",  # Fetch all pull requests (open, closed, merged)
+            "sort": "updated",  # Sort by the updated_at field
+            "direction": "desc",  # Descending order to process newest first
             "per_page": per_page,
             "page": page
         }
         
         response = requests.get(url, headers=self.headers, params=params)
         response.raise_for_status()
-        data = response.json()
-        
-        # Handle since date comparison - ensure both datetimes are timezone-aware
-        if isinstance(since, str):
-            # Parse the since string and make it timezone-aware if it isn't
-            if since.endswith('Z'):
-                since_dt = datetime.strptime(since, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            else:
-                since_dt = datetime.fromisoformat(since.replace('Z', '+00:00'))
-        else:
-            since_dt = since
-            
-        filtered = []
-        for pr in data:
-            # Parse PR updated_at and make it timezone-aware
+        prs = response.json()
+
+        # Convert last_updated to a timezone-aware datetime object
+        last_updated_dt = datetime.strptime(last_updated, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+        # Filter pull requests locally based on the last_updated timestamp
+        filtered_prs = []
+        for pr in prs:
             pr_updated = datetime.strptime(pr['updated_at'], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            if pr_updated > since_dt:
-                filtered.append(pr)
-        
-        return filtered
+            if pr_updated <= last_updated_dt:
+                break  # Stop fetching if we reach pull requests older than last_updated
+            filtered_prs.append(pr)
+
+        return filtered_prs
 
     def fetch_commits_for_pull_request(self, pull_number: int, page: int = 1, per_page: int = 100) -> List[Dict[str, Any]]:
         """Fetch commits for a specific pull request."""

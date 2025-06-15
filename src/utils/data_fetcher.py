@@ -168,56 +168,57 @@ class DataFetcher:
                 html_url = excluded.html_url
         """)
 
-    def fetch_and_upsert_pull_requests_with_commits(self, con, since):
+    def fetch_and_upsert_pull_requests_with_commits(self, con, last_updated):
         page = 1
         total_prs = 0
-        
+
         while True:
-            prs = self.provider.fetch_pull_requests(since, page)
+            prs = self.provider.fetch_pull_requests(last_updated, page)
             if not prs:
                 break
-            
+
             print(f"Processing {len(prs)} pull requests from page {page}")
             self.upsert_pull_requests(con, prs)
-            
+
             # Fetch commits for each pull request
             for pr in prs:
                 pr_id = pr["id"]
                 pr_number = pr["number"]
                 print(f"Fetching commits for PR #{pr_number}")
-                
+
                 # Fetch all commits for this PR (handle pagination)
                 commit_page = 1
                 all_commits = []
-                
+
                 while True:
                     try:
                         commits = self.provider.fetch_commits_for_pull_request(pr_number, commit_page)
                         if not commits:
                             break
-                        
+
                         all_commits.extend(commits)
-                        
+
                         # If we got less than the max per page, we're done
                         if len(commits) < 100:
                             break
-                        
+
                         commit_page += 1
                     except Exception as e:
                         print(f"Error fetching commits for PR #{pr_number}: {e}")
                         break
-                
+
                 if all_commits:
                     print(f"Found {len(all_commits)} commits for PR #{pr_number}")
                     self.upsert_pr_commits(con, pr_id, pr_number, all_commits)
-            
+
             total_prs += len(prs)
-            
+
+            # Stop fetching if we reach pull requests older than last_updated
             if len(prs) < 100:
                 break
-            
+
             page += 1
-        
+
         print(f"Total pull requests processed: {total_prs}")
 
     def run(self):
@@ -226,7 +227,7 @@ class DataFetcher:
         # Fetch pull requests with their commits
         last_updated = self.get_last_updated_at(con)
         print(f"Last updated_at: {last_updated}")
-        self.fetch_and_upsert_pull_requests_with_commits(con, since=last_updated)
+        self.fetch_and_upsert_pull_requests_with_commits(con, last_updated)  # Pass last_updated directly
         
         con.close()
 
